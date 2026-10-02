@@ -218,23 +218,85 @@ def key(home, away):
     return f"{home}|{away}".strip().lower()
 
 
-def attach_odds(matches, odds_data):
-    """odds.json accettato come {"home|away": 1.85}, {"home|away": {"odd": 1.85}}
-    oppure {"home|away": {"<bet>": 1.85}} (chiavi in minuscolo)."""
-    odds_data = odds_data or {}
+STOP_TOKENS = {"fc", "cf", "ac", "as", "ss", "us", "sc", "ca", "cr", "ec", "fk", "sk", "afc",
+               "calcio", "club", "clube", "de", "da", "do", "the", "1", "04"}
+
+
+def norm_tokens(name):
+    import unicodedata
+    t = unicodedata.normalize("NFKD", name or "").encode("ascii", "ignore").decode().lower()
+    return [w for w in re.findall(r"[a-z0-9]+", t) if w not in STOP_TOKENS]
+
+
+def same_team(a, b):
+    """Nomi 'compatibili' anche se scritti in modo diverso (CR Flamengo ~ Flamengo,
+    FC Internazionale Milano ~ Inter Milan): ogni parola del nome più corto deve
+    comparire (come prefisso) nel più lungo."""
+    ta, tb = norm_tokens(a), norm_tokens(b)
+    if not ta or not tb:
+        return False
+    short, long_ = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
+    return all(any(len(min(x, y, key=len)) >= 3 and (x.startswith(y) or y.startswith(x)) for y in long_)
+               for x in short)
+
+
+def parse_iso(s):
+    try:
+        return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def index_odds(odds_data):
+    """odds.json: {"matches":[{"home","away","start","odds":{"1":{"value":1.8},"X":{...},"2":{...}}}]}
+    Restituisce una lista di (home, away, start, {"1": q, "X": q, "2": q})."""
+    out = []
+    matches = odds_data.get("matches", []) if isinstance(odds_data, dict) else []
     for m in matches:
-        raw = odds_data.get(key(m["home"], m["away"]))
-        odd = None
-        if isinstance(raw, (int, float)):
-            odd = float(raw)
-        elif isinstance(raw, dict):
-            v = raw.get("odd", raw.get(m["bet"]))
-            odd = float(v) if v else None
+        try:
+            vals = {k: float(v["value"]) for k, v in m.get("odds", {}).items()
+                    if isinstance(v, dict) and float(v.get("value") or 0) > 1}
+            out.append((m["home"], m["away"], parse_iso(m.get("start")), vals))
+        except (KeyError, TypeError, ValueError, AttributeError):
+            continue
+    return out
+
+
+def find_odds(idx, match):
+    when = parse_iso(match["when"])
+    for home, away, start, vals in idx:
+        if not (same_team(home, match["home"]) and same_team(away, match["away"])):
+            continue
+        if when and start and abs((when - start).total_seconds()) > 36 * 3600:
+            continue
+        return vals
+    return {}
+
+
+def real_odd(bet, o):
+    """Quota reale per 1/X/2; doppia chance (1X, X2, 12) ricavata dalle quote singole."""
+    bet = bet.strip().upper()
+    if bet in o:
+        return o[bet]
+    parts = {"1X": ["1", "X"], "X2": ["X", "2"], "12": ["1", "2"]}.get(bet)
+    if parts and all(c in o for c in parts):
+        return 1 / sum(1 / o[c] for c in parts)
+    return None
+
+
+def attach_odds(matches, odds_data):
+    idx = index_odds(odds_data)
+    real = 0
+    for m in matches:
+        odd = real_odd(m["bet"], find_odds(idx, m))
         if odd and odd > 1:
             m["odd"], m["odd_source"] = round(odd, 2), "real"
+            real += 1
         else:
             m["odd"], m["odd_source"] = max(1.05, round(MARGIN * 100 / m["pct"], 2)), "estimated"
-        m["quota"] = m["odd"]  # nome del campo usato dal sito
+        m["quota"] = m["odd"]   # nome del campo usato dal sito
+        m["start"] = m["when"]  # alias usato dalle altre sezioni del sito
+    log.info("Quote reali: %d / %d (le altre sono stimate)", real, len(matches))
 
 
 def build_slip(matches):
@@ -252,11 +314,14 @@ def build_slip(matches):
         slip[name] = {
             "picks": [
                 {**{k: p[k] for k in ("home", "away", "bet", "pct", "when")},
-                 "quota": p["odd"], "odd": p["odd"]}
+                 "quota": p["odd"], "odd": p["odd"], "motivo": p.get("why", ""),
+                 "odd_source": p["odd_source"]}
                 for p in picks
             ],
             "total_quota": total,                      # letto dal sito
             "potential_win_10": round(10 * total, 2),  # letto dal sito (vincita con 10 euro)
+            "potential_win_25": round(25 * total, 2),
+            "combined_pct": round(prob * 100, 1),
             "total_odds": total,
             "combined_prob_pct": round(prob * 100, 1),
             "potential_wins": {str(s): round(s * total, 2) for s in STAKES},
