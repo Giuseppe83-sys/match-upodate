@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-Betstorm matches updater: esecuzione autonoma.
+Betstorm matches updater (versione con API gratuite).
 
-Flusso: Perplexity (fixture) -> OpenAI (pronostici) -> quote (odds.json o fallback)
+Flusso: football-data.org (fixture) -> Gemini (pronostici) -> quote (odds.json o stimate)
 -> schedine easy/medium/hard -> upload matches.json e predictions_history.json su Supabase.
 Non piazza scommesse: produce solo dati e suggerimenti.
 
 Variabili d'ambiente:
-  PERPLEXITY_API_KEY, OPENAI_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+  FOOTBALL_DATA_API_KEY, GEMINI_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
   opzionali: SUPABASE_BUCKET (default betstorm-data), DAYS_AHEAD (default 7, 1-14),
-             OPENAI_MODEL (default gpt-4o-mini), PERPLEXITY_MODEL (default sonar)
+             GEMINI_MODEL (default gemini-2.5-flash-lite), MAX_MATCHES (default 60)
 """
 import json
 import logging
@@ -30,17 +30,21 @@ log = logging.getLogger("betstorm")
 SUPABASE_URL = os.environ["SUPABASE_URL"].rstrip("/")
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
 BUCKET = os.getenv("SUPABASE_BUCKET", "betstorm-data")
-PPLX_KEY = os.environ["PERPLEXITY_API_KEY"]
-OPENAI_KEY = os.environ["OPENAI_API_KEY"]
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-PPLX_MODEL = os.getenv("PERPLEXITY_MODEL", "sonar")
+FD_KEY = os.environ["FOOTBALL_DATA_API_KEY"]
+GEMINI_KEY = os.environ["GEMINI_API_KEY"]
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
 DAYS_AHEAD = max(1, min(14, int(os.getenv("DAYS_AHEAD", "7"))))
+MAX_MATCHES = int(os.getenv("MAX_MATCHES", "60"))
 
+BATCH_SIZE = 20          # partite per chiamata a Gemini
+GEMINI_PAUSE = 7         # secondi tra le chiamate (limiti RPM del piano gratuito)
+FD_PAUSE = 7             # secondi tra le chiamate a football-data (10 richieste/minuto)
+FD_WINDOW_DAYS = 10      # football-data limita l'intervallo di date per richiesta
 PCT_MIN, PCT_MAX = 55, 92
 HISTORY_DAYS = 90
 STAKES = [5, 10, 20]
 SLIP_SIZES = {"easy": 3, "medium": 5, "hard": 7}
-MARGIN = 0.94  # margine bookmaker simulato per le quote fallback
+MARGIN = 0.94            # margine bookmaker simulato per le quote stimate
 
 
 # ---------------------------------------------------------------- utilità HTTP
@@ -55,10 +59,11 @@ def http(method, url, retries=3, **kw):
             log.warning("Tentativo %d/%d fallito: %s", attempt, retries, e)
             if attempt == retries:
                 raise
-            time.sleep(2 ** attempt)
+            time.sleep(15 * attempt)
 
 
 def extract_json(text):
+    text = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.M).strip()
     m = re.search(r"\{.*\}", text, re.S)
     if not m:
         raise ValueError("Nessun JSON nella risposta")
@@ -89,100 +94,101 @@ def sb_upload(path, data):
     log.info("Caricato %s", path)
 
 
-# ---------------------------------------------------------------- competizioni
-def active_competitions(today):
-    """Hint sulle competizioni probabilmente attive in base al mese."""
-    m = today.month
-    comps = []
-    if m >= 8 or m <= 5:
-        comps += ["Serie A", "Premier League", "La Liga", "Bundesliga", "Ligue 1"]
-    if m >= 9 or m <= 5:
-        comps += ["Champions League", "Europa League", "Conference League"]
-    if m in (1, 2, 3, 4, 5):
-        comps += ["Coppa Italia"]
-    if today.year == 2026 and 6 <= m <= 7:
-        comps = ["Mondiali 2026"]
-    return comps or ["principali campionati e coppe"]
-
-
-# ---------------------------------------------------------------- Perplexity
+# ---------------------------------------------------------------- football-data.org
 def fetch_fixtures(start, end):
-    comps = ", ".join(active_competitions(start))
-    prompt = (
-        f"Elenca le partite di calcio in programma dal {start:%Y-%m-%d} al {end:%Y-%m-%d} "
-        f"nelle seguenti competizioni: {comps}. Rispondi SOLO con JSON valido nel formato "
-        '{"fixtures":[{"home":"","away":"","league":"","when":"YYYY-MM-DD HH:MM"}]}. '
-        "Orari in fuso Europe/Rome. Niente testo extra."
-    )
-    r = http(
-        "POST",
-        "https://api.perplexity.ai/chat/completions",
-        headers={"Authorization": f"Bearer {PPLX_KEY}"},
-        json={"model": PPLX_MODEL, "messages": [{"role": "user", "content": prompt}]},
-    )
-    r.raise_for_status()
-    content = r.json()["choices"][0]["message"]["content"]
-    fixtures = extract_json(content).get("fixtures", [])
+    """Partite delle competizioni incluse nel tuo piano, in finestre da FD_WINDOW_DAYS."""
+    fixtures, cursor, first = [], start, True
+    while cursor <= end:
+        window_end = min(cursor + timedelta(days=FD_WINDOW_DAYS - 1), end)
+        if not first:
+            time.sleep(FD_PAUSE)
+        first = False
+        r = http(
+            "GET",
+            "https://api.football-data.org/v4/matches",
+            headers={"X-Auth-Token": FD_KEY},
+            params={"dateFrom": f"{cursor:%Y-%m-%d}", "dateTo": f"{window_end:%Y-%m-%d}"},
+        )
+        r.raise_for_status()
+        for m in r.json().get("matches", []):
+            if m.get("status") not in ("SCHEDULED", "TIMED"):
+                continue
+            fixtures.append({
+                "home": m["homeTeam"].get("name") or m["homeTeam"].get("shortName", ""),
+                "away": m["awayTeam"].get("name") or m["awayTeam"].get("shortName", ""),
+                "league": m.get("competition", {}).get("name", ""),
+                "when": m["utcDate"],
+            })
+        cursor = window_end + timedelta(days=1)
+    fixtures = [f for f in fixtures if f["home"] and f["away"]]
+    fixtures.sort(key=lambda f: f["when"])
     log.info("Fixture trovate: %d", len(fixtures))
-    return fixtures
+    return fixtures[:MAX_MATCHES]
 
 
-# ---------------------------------------------------------------- OpenAI
-def predict(fixtures):
+# ---------------------------------------------------------------- Gemini
+def predict_batch(batch):
+    items = [{"i": i, "home": f["home"], "away": f["away"], "league": f["league"], "when": f["when"]}
+             for i, f in enumerate(batch)]
     prompt = (
         "Sei un analista di pronostici calcistici. Per ogni partita scegli UN tipo di bet "
         "(es. 1, X, 2, 1X, X2, Over 2.5, Under 2.5, Goal, NoGoal), stima la probabilità in "
-        "percentuale intera (pct), una spiegazione breve in italiano (why, max 160 caratteri) "
-        "e un H2H sintetico (h2h, max 80 caratteri). Rispondi SOLO con JSON: "
-        '{"predictions":[{"home":"","away":"","bet":"","pct":0,"why":"","h2h":""}]}.\n'
-        f"Partite: {json.dumps(fixtures, ensure_ascii=False)}"
+        "percentuale intera (pct), scrivi una spiegazione breve in italiano (why, max 160 "
+        "caratteri) e un H2H sintetico basato solo su ciò che conosci con ragionevole certezza "
+        "(h2h, max 80 caratteri; se non sei sicuro scrivi 'n.d.'). Rispondi SOLO con JSON: "
+        '{"predictions":[{"i":0,"bet":"","pct":0,"why":"","h2h":""}]}.\n'
+        f"Partite: {json.dumps(items, ensure_ascii=False)}"
     )
     r = http(
         "POST",
-        "https://api.openai.com/v1/chat/completions",
-        headers={"Authorization": f"Bearer {OPENAI_KEY}"},
+        f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent",
+        headers={"x-goog-api-key": GEMINI_KEY, "Content-Type": "application/json"},
         json={
-            "model": OPENAI_MODEL,
-            "response_format": {"type": "json_object"},
-            "messages": [{"role": "user", "content": prompt}],
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"responseMimeType": "application/json", "temperature": 0.4},
         },
     )
-    r.raise_for_status()
-    return json.loads(r.json()["choices"][0]["message"]["content"]).get("predictions", [])
+    if r.status_code != 200:
+        raise RuntimeError(f"Gemini {r.status_code}: {r.text[:300]}")
+    text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+    return extract_json(text).get("predictions", [])
 
 
-# ---------------------------------------------------------------- normalizzazione e quote
+def predict_all(fixtures):
+    matches = []
+    for start in range(0, len(fixtures), BATCH_SIZE):
+        if start:
+            time.sleep(GEMINI_PAUSE)
+        batch = fixtures[start:start + BATCH_SIZE]
+        try:
+            preds = predict_batch(batch)
+        except Exception as e:  # un batch fallito non blocca gli altri
+            log.error("Batch %d fallito: %s", start // BATCH_SIZE + 1, e)
+            continue
+        for p in preds:
+            try:
+                f = batch[int(p["i"])]
+                pct = int(round(float(p["pct"])))
+            except (KeyError, ValueError, TypeError, IndexError):
+                continue
+            matches.append({
+                **f,
+                "bet": str(p.get("bet", "")).strip(),
+                "pct": max(PCT_MIN, min(PCT_MAX, pct)),
+                "why": p.get("why", ""),
+                "h2h": p.get("h2h", ""),
+            })
+    matches.sort(key=lambda x: (-x["pct"], x["when"]))
+    return matches
+
+
+# ---------------------------------------------------------------- quote e schedine
 def key(home, away):
     return f"{home}|{away}".strip().lower()
 
 
-def merge_and_normalize(fixtures, preds):
-    meta = {key(f["home"], f["away"]): f for f in fixtures if f.get("home") and f.get("away")}
-    out = []
-    for p in preds:
-        f = meta.get(key(p.get("home", ""), p.get("away", "")))
-        if not f:
-            continue
-        try:
-            pct = int(round(float(p["pct"])))
-        except (KeyError, ValueError, TypeError):
-            continue
-        out.append({
-            "home": f["home"],
-            "away": f["away"],
-            "league": f.get("league", ""),
-            "when": f.get("when", ""),
-            "bet": p.get("bet", ""),
-            "pct": max(PCT_MIN, min(PCT_MAX, pct)),
-            "why": p.get("why", ""),
-            "h2h": p.get("h2h", ""),
-        })
-    out.sort(key=lambda x: (-x["pct"], x["when"]))
-    return out
-
-
 def attach_odds(matches, odds_data):
-    """odds.json accettato come {"home|away": 1.85} oppure {"home|away": {"odd": 1.85}}
+    """odds.json accettato come {"home|away": 1.85}, {"home|away": {"odd": 1.85}}
     oppure {"home|away": {"<bet>": 1.85}} (chiavi in minuscolo)."""
     odds_data = odds_data or {}
     for m in matches:
@@ -231,14 +237,13 @@ def update_history(slip, matches, today):
     })
     cutoff = f"{today - timedelta(days=HISTORY_DAYS):%Y-%m-%d}"
     entries = sorted((e for e in entries if e["date"] >= cutoff), key=lambda e: e["date"])
-    history = {
+    sb_upload("predictions_history.json", {
         "entries": entries,
         "stats": {
             "days_tracked": len(entries),
             "total_matches": sum(e["matches_count"] for e in entries),
         },
-    }
-    sb_upload("predictions_history.json", history)
+    })
 
 
 # ---------------------------------------------------------------- main
@@ -252,7 +257,7 @@ def main():
         log.error("Nessuna fixture: interrompo senza sovrascrivere i dati")
         return 1
 
-    matches = merge_and_normalize(fixtures, predict(fixtures))
+    matches = predict_all(fixtures)
     if not matches:
         log.error("Nessuna predizione valida: interrompo senza sovrascrivere i dati")
         return 1
