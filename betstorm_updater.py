@@ -98,7 +98,8 @@ def sb_create_bucket():
 def sb_upload(path, data):
     url = f"{SUPABASE_URL}/storage/v1/object/{BUCKET}/{path}"
     kw = dict(
-        headers={**sb_headers(), "Content-Type": "application/json", "x-upsert": "true"},
+        headers={**sb_headers(), "Content-Type": "application/json", "x-upsert": "true",
+                 "cache-control": "max-age=60"},  # cache breve: il sito vede subito gli aggiornamenti
         data=json.dumps(data, ensure_ascii=False).encode("utf-8"),
     )
     r = http("POST", url, **kw)
