@@ -139,7 +139,10 @@ def fetch_fixtures(start, end):
         cursor = window_end + timedelta(days=1)
     fixtures = [f for f in fixtures if f["home"] and f["away"]]
     fixtures.sort(key=lambda f: f["when"])
-    log.info("Fixture trovate: %d", len(fixtures))
+    per_league = {}
+    for f in fixtures:
+        per_league[f["league"]] = per_league.get(f["league"], 0) + 1
+    log.info("Fixture trovate: %d | per competizione: %s", len(fixtures), per_league)
     return fixtures[:MAX_MATCHES]
 
 
