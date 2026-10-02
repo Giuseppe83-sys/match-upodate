@@ -84,14 +84,30 @@ def sb_download(path):
     return None
 
 
-def sb_upload(path, data):
+def sb_create_bucket():
     r = http(
         "POST",
-        f"{SUPABASE_URL}/storage/v1/object/{BUCKET}/{path}",
+        f"{SUPABASE_URL}/storage/v1/bucket",
+        headers={**sb_headers(), "Content-Type": "application/json"},
+        json={"id": BUCKET, "name": BUCKET, "public": True},
+    )
+    log.info("Creazione bucket %s: %s %s", BUCKET, r.status_code, r.text[:200])
+    return r.status_code in (200, 201)
+
+
+def sb_upload(path, data):
+    url = f"{SUPABASE_URL}/storage/v1/object/{BUCKET}/{path}"
+    kw = dict(
         headers={**sb_headers(), "Content-Type": "application/json", "x-upsert": "true"},
         data=json.dumps(data, ensure_ascii=False).encode("utf-8"),
     )
-    r.raise_for_status()
+    r = http("POST", url, **kw)
+    if r.status_code != 200 and "bucket not found" in r.text.lower():
+        log.warning("Bucket %s non trovato: lo creo (pubblico)", BUCKET)
+        if sb_create_bucket():
+            r = http("POST", url, **kw)
+    if r.status_code != 200:
+        raise RuntimeError(f"Upload {path} fallito: {r.status_code} {r.text[:400]}")
     log.info("Caricato %s", path)
 
 
