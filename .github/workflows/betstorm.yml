@@ -8,18 +8,36 @@ on:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - run: pip install requests
-      - run: python betstorm_updater.py
+
+      # 1) Quote reali: aggiorna odds.json, tennis.json, basketball.json (~10 crediti/giorno)
+      - name: Aggiorna quote, tennis e basket
+        continue-on-error: true   # se fallisce, le partite di calcio vengono aggiornate lo stesso
+        run: python betstorm_odds.py
+        env:
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_BUCKET: betstorm-data
+          ODDS_DAYS_AHEAD: "7"
+          MAX_KEYS_SOCCER: "6"
+          MAX_KEYS_TENNIS: "2"
+          MAX_KEYS_BASKET: "2"
+
+      # 2) Partite, pronostici e schedine del calcio (usa le quote appena aggiornate)
+      - name: Aggiorna partite e pronostici
+        run: python betstorm_updater.py
         env:
           FOOTBALL_DATA_API_KEY: ${{ secrets.FOOTBALL_DATA_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SUPABASE_BUCKET: betstorm-data
-          DAYS_AHEAD: "7"
+          DAYS_AHEAD: "14"
+          MAX_MATCHES: "80"
