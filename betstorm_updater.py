@@ -44,7 +44,7 @@ FD_WINDOW_DAYS = 10      # football-data limita l'intervallo di date per richies
 PCT_MIN, PCT_MAX = 55, 92
 HISTORY_DAYS = 90
 STAKES = [5, 10, 20]
-SLIP_SIZES = {"easy": 3, "medium": 5, "hard": 7}
+SLIP_SIZES = {"easy": 2, "medium": 4, "hard": 6}  # come nei testi del sito
 MARGIN = 0.94            # margine bookmaker simulato per le quote stimate
 
 
@@ -233,6 +233,7 @@ def attach_odds(matches, odds_data):
             m["odd"], m["odd_source"] = round(odd, 2), "real"
         else:
             m["odd"], m["odd_source"] = max(1.05, round(MARGIN * 100 / m["pct"], 2)), "estimated"
+        m["quota"] = m["odd"]  # nome del campo usato dal sito
 
 
 def build_slip(matches):
@@ -246,9 +247,16 @@ def build_slip(matches):
         for p in picks:
             total *= p["odd"]
             prob *= p["pct"] / 100
+        total = round(total, 2)
         slip[name] = {
-            "picks": [{k: p[k] for k in ("home", "away", "bet", "odd", "pct", "when")} for p in picks],
-            "total_odds": round(total, 2),
+            "picks": [
+                {**{k: p[k] for k in ("home", "away", "bet", "pct", "when")},
+                 "quota": p["odd"], "odd": p["odd"]}
+                for p in picks
+            ],
+            "total_quota": total,                      # letto dal sito
+            "potential_win_10": round(10 * total, 2),  # letto dal sito (vincita con 10 euro)
+            "total_odds": total,
             "combined_prob_pct": round(prob * 100, 1),
             "potential_wins": {str(s): round(s * total, 2) for s in STAKES},
         }
