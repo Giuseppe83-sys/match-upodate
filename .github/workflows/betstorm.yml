@@ -1,1 +1,26 @@
+name: Betstorm daily update
+
+on:
+  schedule:
+    - cron: "0 5 * * *"   # ogni giorno alle 05:00 UTC (07:00 in Italia con ora legale)
+  workflow_dispatch:       # avvio manuale dal tab Actions
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - run: python betstorm_updater.py
+        env:
+          PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_BUCKET: betstorm-data
+          DAYS_AHEAD: "7"
 
