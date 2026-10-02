@@ -9,7 +9,7 @@ Non piazza scommesse: produce solo dati e suggerimenti.
 Variabili d'ambiente:
   FOOTBALL_DATA_API_KEY, GEMINI_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
   opzionali: SUPABASE_BUCKET (default betstorm-data), DAYS_AHEAD (default 7, 1-14),
-             GEMINI_MODEL (default gemini-2.5-flash-lite), MAX_MATCHES (default 60)
+             GEMINI_MODEL (default gemini-3.5-flash-lite), MAX_MATCHES (default 60)
 """
 import json
 import logging
@@ -32,7 +32,8 @@ SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
 BUCKET = os.getenv("SUPABASE_BUCKET", "betstorm-data")
 FD_KEY = os.environ["FOOTBALL_DATA_API_KEY"]
 GEMINI_KEY = os.environ["GEMINI_API_KEY"]
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+GEMINI_FALLBACKS = ["gemini-3.5-flash", "gemini-3-flash-preview"]  # provati se il modello dà 404
 DAYS_AHEAD = max(1, min(14, int(os.getenv("DAYS_AHEAD", "7"))))
 MAX_MATCHES = int(os.getenv("MAX_MATCHES", "60"))
 
@@ -139,19 +140,29 @@ def predict_batch(batch):
         '{"predictions":[{"i":0,"bet":"","pct":0,"why":"","h2h":""}]}.\n'
         f"Partite: {json.dumps(items, ensure_ascii=False)}"
     )
-    r = http(
-        "POST",
-        f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent",
-        headers={"x-goog-api-key": GEMINI_KEY, "Content-Type": "application/json"},
-        json={
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"responseMimeType": "application/json", "temperature": 0.4},
-        },
-    )
-    if r.status_code != 200:
-        raise RuntimeError(f"Gemini {r.status_code}: {r.text[:300]}")
-    text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-    return extract_json(text).get("predictions", [])
+    global GEMINI_MODEL
+    models = [GEMINI_MODEL] + [m for m in GEMINI_FALLBACKS if m != GEMINI_MODEL]
+    for model in models:
+        r = http(
+            "POST",
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+            headers={"x-goog-api-key": GEMINI_KEY, "Content-Type": "application/json"},
+            json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"responseMimeType": "application/json", "temperature": 0.4},
+            },
+        )
+        if r.status_code == 404:
+            log.warning("Modello %s non disponibile, provo il successivo", model)
+            continue
+        if r.status_code != 200:
+            raise RuntimeError(f"Gemini {r.status_code}: {r.text[:300]}")
+        if model != GEMINI_MODEL:
+            log.info("Uso il modello %s", model)
+            GEMINI_MODEL = model  # lo riuso per i batch successivi
+        text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+        return extract_json(text).get("predictions", [])
+    raise RuntimeError("Nessun modello Gemini disponibile: imposta GEMINI_MODEL")
 
 
 def predict_all(fixtures):
