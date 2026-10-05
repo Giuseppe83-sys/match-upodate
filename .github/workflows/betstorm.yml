@@ -25,7 +25,7 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SUPABASE_BUCKET: betstorm-data
-          ODDS_DAYS_AHEAD: "14"
+          ODDS_DAYS_AHEAD: "7"
           MAX_KEYS_SOCCER: "6"
           MAX_KEYS_TENNIS: "2"
           MAX_KEYS_BASKET: "2"
