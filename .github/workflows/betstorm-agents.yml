@@ -1,0 +1,52 @@
+name: BetStorm agents
+on:
+  schedule:
+    - cron: "0 7 * * *"   # Telegram 09:00 CEST circa; UTC fisso
+    - cron: "0 8 * * *"   # Newsletter 10:00 CEST circa
+    - cron: "0 18 * * 1"  # SEO/content lunedì sera
+    - cron: "0 9 * * 1"   # Results checker lunedì
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "telegram | email | seo | results | all"
+        required: true
+        default: all
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12" }
+      - run: pip install requests
+      - name: Run scheduled/manual agents
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_BUCKET: betstorm-data
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          FOOTBALL_DATA_API_KEY: ${{ secrets.FOOTBALL_DATA_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RESEND_FROM_EMAIL: ${{ secrets.RESEND_FROM_EMAIL }}
+          NEWSLETTER_RECIPIENTS: ${{ secrets.NEWSLETTER_RECIPIENTS }}
+          TASK: ${{ github.event.inputs.task }}
+          EVENT: ${{ github.event_name }}
+          CRON: ${{ github.event.schedule }}
+        shell: bash
+        run: |
+          set -e
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            [ "$TASK" = all ] || [ "$TASK" = telegram ] && python telegram_publisher.py || true
+            [ "$TASK" = all ] || [ "$TASK" = email ] && python email_notifier.py || true
+            [ "$TASK" = all ] || [ "$TASK" = seo ] && python seo_content_engine.py || true
+            [ "$TASK" = all ] || [ "$TASK" = results ] && python results_checker.py || true
+          else
+            case "$CRON" in
+              "0 7 * * *") python telegram_publisher.py ;;
+              "0 8 * * *") python email_notifier.py ;;
+              "0 18 * * 1") python seo_content_engine.py ;;
+              "0 9 * * 1") python results_checker.py ;;
+            esac
+          fi
