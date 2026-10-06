@@ -1,24 +1,30 @@
 name: BetStorm agents
+
 on:
   schedule:
-    - cron: "0 7 * * *"   # Telegram 09:00 CEST circa; UTC fisso
-    - cron: "0 8 * * *"   # Newsletter 10:00 CEST circa
-    - cron: "0 18 * * 1"  # SEO/content lunedì sera
-    - cron: "0 9 * * 1"   # Results checker lunedì
+    - cron: "0 6 * * *"   # Results checker: ogni giorno, dopo updater 05:00 UTC
+    - cron: "0 7 * * *"   # Telegram
+    - cron: "0 8 * * *"   # Newsletter
+    - cron: "0 18 * * 1"  # SEO/content: lunedì
   workflow_dispatch:
     inputs:
       task:
-        description: "telegram | email | seo | results | all"
+        description: "telegram | email | seo | results | publish | all"
         required: true
         default: all
+
 jobs:
   run:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+
       - uses: actions/setup-python@v6
-        with: { python-version: "3.12" }
+        with:
+          python-version: "3.12"
+
       - run: pip install requests
+
       - name: Run scheduled/manual agents
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -31,22 +37,49 @@ jobs:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           RESEND_FROM_EMAIL: ${{ secrets.RESEND_FROM_EMAIL }}
           NEWSLETTER_RECIPIENTS: ${{ secrets.NEWSLETTER_RECIPIENTS }}
+          BETSTORM_GITHUB_TOKEN: ${{ secrets.BETSTORM_GITHUB_TOKEN }}
+          BETSTORM_SITE_REPO: Giuseppe83-sys/BETSTORM
+          BETSTORM_SITE_BRANCH: main
+          BETSTORM_SITE_URL: https://betstorm.it
           TASK: ${{ github.event.inputs.task }}
           EVENT: ${{ github.event_name }}
           CRON: ${{ github.event.schedule }}
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
+
+          run_seo() {
+            python seo_content_engine.py
+            python seo_static_publisher.py
+          }
+
           if [ "$EVENT" = "workflow_dispatch" ]; then
-            [ "$TASK" = all ] || [ "$TASK" = telegram ] && python telegram_publisher.py || true
-            [ "$TASK" = all ] || [ "$TASK" = email ] && python email_notifier.py || true
-            [ "$TASK" = all ] || [ "$TASK" = seo ] && python seo_content_engine.py || true
-            [ "$TASK" = all ] || [ "$TASK" = results ] && python results_checker.py || true
+            case "${TASK:-all}" in
+              telegram) python telegram_publisher.py ;;
+              email) python email_notifier.py ;;
+              seo) run_seo ;;
+              results) python results_checker.py ;;
+              publish) python seo_static_publisher.py ;;
+              all)
+                python telegram_publisher.py
+                python email_notifier.py
+                run_seo
+                python results_checker.py
+                ;;
+              *)
+                echo "Task non valido: ${TASK:-}"
+                exit 2
+                ;;
+            esac
           else
             case "$CRON" in
+              "0 6 * * *") python results_checker.py ;;
               "0 7 * * *") python telegram_publisher.py ;;
               "0 8 * * *") python email_notifier.py ;;
-              "0 18 * * 1") python seo_content_engine.py ;;
-              "0 9 * * 1") python results_checker.py ;;
+              "0 18 * * 1") run_seo ;;
+              *)
+                echo "Cron non riconosciuto: $CRON"
+                exit 2
+                ;;
             esac
           fi
