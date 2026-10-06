@@ -25,9 +25,22 @@ def bet_ok(bet,res,h,a):
 
 def main():
     hist=download('predictions_history.json',{'entries':[]}); entries=hist.get('entries',[])
-    today = datetime.now(timezone.utc).date()
-    start = (today - timedelta(days=1)).isoformat()
-    end = today.isoformat()    r=requests.get('https://api.football-data.org/v4/matches',headers={'X-Auth-Token':FD},params={'dateFrom':start,'dateTo':end},timeout=60); r.raise_for_status()
+today = datetime.now(timezone.utc).date()
+start = (today - timedelta(days=1)).isoformat()
+end = today.isoformat()
+
+r = requests.get(
+    'https://api.football-data.org/v4/matches',
+    headers={'X-Auth-Token': FD},
+    params={'dateFrom': start, 'dateTo': end},
+    timeout=60
+)
+r.raise_for_status()
+
+finished = [
+    m for m in r.json().get('matches', [])
+    if m.get('status') == 'FINISHED'
+]
     finished=[m for m in r.json().get('matches',[]) if m.get('status')=='FINISHED']
     total=correct=incorrect=0
     for e in entries:
