@@ -59,7 +59,7 @@ def valid_article(article):
         isinstance(article, dict)
         and isinstance(article.get("slug"), str)
         and SLUG_RE.fullmatch(article["slug"]) is not None
-        and bool(article.get("title"))
+        and bool(article.get("article_title") or article.get("title"))
         and bool(article.get("content_html"))
     )
 
@@ -82,7 +82,7 @@ def article_date(article):
 
 def article_html(article):
     slug = article["slug"]
-    title = safe_meta(article["title"], 120)
+    title = safe_meta(article.get("article_title") or article.get("title"), 120)
     description = safe_meta(
         article.get("meta_description") or article.get("excerpt") or title, 155
     )
