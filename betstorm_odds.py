@@ -115,9 +115,20 @@ def pick_keys(active, group):
     elif group == "basket":
         ordered = [k for k in BASKET_PREFERRED if k in keys]
         ordered += [k for k in keys if k.startswith("basketball_") and k not in ordered]
-    else:  # tennis: prima ATP, poi WTA
-        t = [k for k in keys if k.startswith("tennis_")]
-        ordered = sorted(t, key=lambda k: (0 if "_atp_" in k else 1, k))
+    else:  # tennis: bilancia ATP e WTA, evitando che i primi slot siano tutti ATP
+        t = sorted(k for k in keys if k.startswith("tennis_"))
+        atp = [k for k in t if "_atp_" in k]
+        wta = [k for k in t if "_wta_" in k]
+        other = [k for k in t if k not in atp and k not in wta]
+
+        ordered = []
+        # Interleave ATP/WTA: con MAX_KEYS_TENNIS=2 prende 1 ATP + 1 WTA.
+        while atp or wta:
+            if atp:
+                ordered.append(atp.pop(0))
+            if wta:
+                ordered.append(wta.pop(0))
+        ordered.extend(other)
     return ordered[:MAX_KEYS[group]]
 
 
@@ -233,6 +244,9 @@ def main():
     for group in ("calcio", "tennis", "basket"):
         keys = pick_keys(active, group)
         log.info("%s -> %s", group, keys)
+        if group == "tennis":
+            all_tennis = sorted(s["key"] for s in active if s["key"].startswith("tennis_"))
+            log.info("Tennis attivi disponibili: %s", all_tennis)
         entries, ok = [], not keys  # nessuna competizione attiva = risultato valido (vuoto)
         for k in keys:
             try:
@@ -259,6 +273,8 @@ def main():
         if ok:
             entries.sort(key=lambda e: e["start"])
             results[group] = entries
+            if group == "tennis":
+                log.info("Tennis: %d match utili entro %d giorni", len(entries), DAYS_AHEAD)
         else:
             log.error("Nessun dato valido per %s: lascio il file com'è", group)
 
