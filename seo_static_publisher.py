@@ -40,8 +40,17 @@ def load_articles():
     r = requests.get(url, headers=supabase_headers(), timeout=60)
     r.raise_for_status()
     data = r.json()
+
+    # Il file BetStorm usa la struttura {"articles": [...]}.
+    # Accettiamo anche un array diretto per compatibilità.
+    if isinstance(data, dict):
+        data = data.get("articles", [])
+
     if not isinstance(data, list):
-        raise RuntimeError("articles.json deve contenere un array JSON.")
+        raise RuntimeError(
+            "Formato articles.json non valido: atteso {'articles': [...]} oppure [...]."
+        )
+
     return data
 
 
