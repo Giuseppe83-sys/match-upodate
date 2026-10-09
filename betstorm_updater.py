@@ -186,29 +186,51 @@ def predict_batch(batch):
 
 
 def predict_all(fixtures):
+    """Non pubblicare un feed se Gemini omette partite o restituisce dati invalidi."""
     matches = []
     for start in range(0, len(fixtures), BATCH_SIZE):
         if start:
             time.sleep(GEMINI_PAUSE)
         batch = fixtures[start:start + BATCH_SIZE]
+        batch_no = start // BATCH_SIZE + 1
         try:
             preds = predict_batch(batch)
-        except Exception as e:  # un batch fallito non blocca gli altri
-            log.error("Batch %d fallito: %s", start // BATCH_SIZE + 1, e)
-            continue
+        except Exception as e:
+            raise RuntimeError(f"Batch Gemini {batch_no} fallito; pubblicazione interrotta") from e
+
+        if not isinstance(preds, list):
+            raise RuntimeError(f"Batch Gemini {batch_no}: risposta non valida")
+        by_index = {}
         for p in preds:
+            if not isinstance(p, dict):
+                raise RuntimeError(f"Batch Gemini {batch_no}: predizione non valida")
             try:
-                f = batch[int(p["i"])]
+                raw_index = p["i"]
+                i = int(raw_index)
+                if str(raw_index) != str(i) or not 0 <= i < len(batch) or i in by_index:
+                    raise ValueError("indice assente, duplicato o fuori intervallo")
                 pct = int(round(float(p["pct"])))
-            except (KeyError, ValueError, TypeError, IndexError):
-                continue
-            matches.append({
+                if not 0 <= pct <= 100:
+                    raise ValueError("percentuale fuori intervallo")
+                bet = str(p["bet"]).strip()
+                if not bet:
+                    raise ValueError("selezione vuota")
+            except (KeyError, ValueError, TypeError, OverflowError) as e:
+                raise RuntimeError(f"Batch Gemini {batch_no}: predizione non valida") from e
+            f = batch[i]
+            by_index[i] = {
                 **f,
-                "bet": str(p.get("bet", "")).strip(),
+                "bet": bet,
                 "pct": max(PCT_MIN, min(PCT_MAX, pct)),
                 "why": p.get("why", ""),
                 "h2h": p.get("h2h", ""),
-            })
+            }
+        if len(by_index) != len(batch):
+            raise RuntimeError(
+                f"Batch Gemini {batch_no}: {len(by_index)}/{len(batch)} partite; "
+                "pubblicazione interrotta"
+            )
+        matches.extend(by_index[i] for i in range(len(batch)))
     matches.sort(key=lambda x: (-x["pct"], x["when"]))
     return matches
 
