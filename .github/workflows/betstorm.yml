@@ -18,7 +18,6 @@ jobs:
 
       # 1) Quote reali: aggiorna odds.json, tennis.json, basketball.json (~10 crediti/giorno)
       - name: Aggiorna quote, tennis e basket
-        continue-on-error: true   # se fallisce, le partite di calcio vengono aggiornate lo stesso
         run: python betstorm_odds.py
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
