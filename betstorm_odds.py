@@ -247,7 +247,8 @@ def main():
         if group == "tennis":
             all_tennis = sorted(s["key"] for s in active if s["key"].startswith("tennis_"))
             log.info("Tennis attivi disponibili: %s", all_tennis)
-        entries, ok = [], not keys  # nessuna competizione attiva = risultato valido (vuoto)
+        # Nessuna competizione attiva: feed vuoto valido, non un errore API.
+        entries = []
         for k in keys:
             try:
                 events = fetch_events(k)
@@ -259,7 +260,6 @@ def main():
                 log.error("%s fallito: %s", k, e)
                 failed = True
                 continue
-            ok = True
             for ev in events:
                 try:
                     start = parse_iso(ev["commence_time"])
@@ -270,15 +270,18 @@ def main():
                     if entry:
                         entries.append(entry)
             time.sleep(0.3)
-        if ok:
-            entries.sort(key=lambda e: e["start"])
-            results[group] = entries
-            if group == "tennis":
-                log.info("Tennis: %d match utili entro %d giorni", len(entries), DAYS_AHEAD)
-        else:
-            log.error("Nessun dato valido per %s: lascio il file com'è", group)
+        entries.sort(key=lambda e: e["start"])
+        results[group] = entries
+        if group == "tennis":
+            log.info("Tennis: %d match utili entro %d giorni", len(entries), DAYS_AHEAD)
 
-    stamp = now.replace(tzinfo=None).isoformat()
+    # Non pubblicare feed parziali quando anche una sola richiesta è fallita.
+    # Il workflow GitHub Actions segnalerà l'errore con exit code 1.
+    if failed:
+        log.error("Aggiornamento incompleto: nessun file pubblicato su Supabase.")
+        return 1
+
+    stamp = now.isoformat(timespec="microseconds").replace("+00:00", "Z")
     if "calcio" in results:
         sb_upload("odds.json", {"matches": results["calcio"], "updated_at": stamp, "affiliates": affiliates})
     for group, fname in (("tennis", "tennis.json"), ("basket", "basketball.json")):
@@ -286,7 +289,7 @@ def main():
             sb_upload(fname, {"schedine": build_schedine(results[group]),
                               "matches": results[group], "updated_at": stamp})
     log.info("Fatto. Crediti rimasti: %s", Quota.remaining)
-    return 1 if (failed and not results) else 0
+    return 0
 
 
 if __name__ == "__main__":
