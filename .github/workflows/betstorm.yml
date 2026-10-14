@@ -28,15 +28,3 @@ jobs:
           MAX_KEYS_SOCCER: "6"
           MAX_KEYS_TENNIS: "2"
           MAX_KEYS_BASKET: "2"
-
-      # 2) Partite, pronostici e schedine del calcio (usa le quote appena aggiornate)
-      - name: Aggiorna partite e pronostici
-        run: python betstorm_updater.py
-        env:
-          FOOTBALL_DATA_API_KEY: ${{ secrets.FOOTBALL_DATA_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          SUPABASE_BUCKET: betstorm-data
-          DAYS_AHEAD: "14"
-          MAX_MATCHES: "80"
