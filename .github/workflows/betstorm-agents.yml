@@ -3,12 +3,11 @@ name: BetStorm agents
 on:
   schedule:
     - cron: "0 6 * * *"   # Results checker: ogni giorno, dopo updater 05:00 UTC
-    - cron: "0 8 * * *"   # Newsletter
     - cron: "0 18 * * 1"  # SEO/content: lunedì
   workflow_dispatch:
     inputs:
       task:
-        description: "email | seo | results | publish | all (Telegram disattivato)"
+        description: "seo | results | publish | all (Telegram e newsletter disattivati)"
         required: true
         default: all
 
@@ -31,9 +30,6 @@ jobs:
           SUPABASE_BUCKET: betstorm-data
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           FOOTBALL_DATA_API_KEY: ${{ secrets.FOOTBALL_DATA_API_KEY }}
-          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-          RESEND_FROM_EMAIL: ${{ secrets.RESEND_FROM_EMAIL }}
-          NEWSLETTER_RECIPIENTS: ${{ secrets.NEWSLETTER_RECIPIENTS }}
           BETSTORM_GITHUB_TOKEN: ${{ secrets.BETSTORM_GITHUB_TOKEN }}
           BETSTORM_SITE_REPO: Giuseppe83-sys/BETSTORM
           BETSTORM_SITE_BRANCH: main
@@ -53,12 +49,11 @@ jobs:
           if [ "$EVENT" = "workflow_dispatch" ]; then
             case "${TASK:-all}" in
               telegram) echo "Pubblicazione Telegram disattivata" ;;
-              email) python email_notifier.py ;;
+              email) echo "Newsletter automatica disattivata" ;;
               seo) run_seo ;;
               results) python results_checker.py ;;
               publish) python seo_static_publisher.py ;;
               all)
-                python email_notifier.py
                 run_seo
                 python results_checker.py
                 ;;
@@ -70,7 +65,6 @@ jobs:
           else
             case "$CRON" in
               "0 6 * * *") python results_checker.py ;;
-              "0 8 * * *") python email_notifier.py ;;
               "0 18 * * 1") run_seo ;;
               *)
                 echo "Cron non riconosciuto: $CRON"
