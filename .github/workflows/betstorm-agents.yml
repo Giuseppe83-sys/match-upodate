@@ -1,24 +1,13 @@
 name: BetStorm agents
 
+# Automazioni degli agenti temporaneamente sospese.
+# L'aggiornamento delle quote resta gestito separatamente da betstorm.yml.
 on:
-  schedule:
-    - cron: "0 6 * * *"   # Solo controllo risultati storici
   workflow_dispatch:
 
 jobs:
-  run:
+  paused:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-      - run: pip install requests
-      - name: Controlla risultati storici
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          SUPABASE_BUCKET: betstorm-data
-          FOOTBALL_DATA_API_KEY: ${{ secrets.FOOTBALL_DATA_API_KEY }}
-        run: python results_checker.py
+      - name: Agenti temporaneamente sospesi
+        run: 'echo "Agenti BetStorm sospesi: nessuna modifica a Supabase o al sito."'
