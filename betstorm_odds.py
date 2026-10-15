@@ -115,20 +115,9 @@ def pick_keys(active, group):
     elif group == "basket":
         ordered = [k for k in BASKET_PREFERRED if k in keys]
         ordered += [k for k in keys if k.startswith("basketball_") and k not in ordered]
-    else:  # tennis: bilancia ATP e WTA, evitando che i primi slot siano tutti ATP
-        t = sorted(k for k in keys if k.startswith("tennis_"))
-        atp = [k for k in t if "_atp_" in k]
-        wta = [k for k in t if "_wta_" in k]
-        other = [k for k in t if k not in atp and k not in wta]
-
-        ordered = []
-        # Interleave ATP/WTA: con MAX_KEYS_TENNIS=2 prende 1 ATP + 1 WTA.
-        while atp or wta:
-            if atp:
-                ordered.append(atp.pop(0))
-            if wta:
-                ordered.append(wta.pop(0))
-        ordered.extend(other)
+    else:  # tennis: prima ATP, poi WTA
+        t = [k for k in keys if k.startswith("tennis_")]
+        ordered = sorted(t, key=lambda k: (0 if "_atp_" in k else 1, k))
     return ordered[:MAX_KEYS[group]]
 
 
@@ -240,30 +229,21 @@ def main():
     active = [s for s in api_get("/sports", {}) if s.get("active") and not s.get("has_outrights")]
     log.info("Competizioni attive: %d (richiesta gratuita)", len(active))
 
-    results, failed = {}, False
+    # Prepara tutti i dati prima di pubblicare: un errore API blocca l'intero aggiornamento.
+    results = {}
     for group in ("calcio", "tennis", "basket"):
         keys = pick_keys(active, group)
         log.info("%s -> %s", group, keys)
-        if group == "tennis":
-            all_tennis = sorted(s["key"] for s in active if s["key"].startswith("tennis_"))
-            log.info("Tennis attivi disponibili: %s", all_tennis)
-        # Nessuna competizione attiva: feed vuoto valido, non un errore API.
         entries = []
         for k in keys:
-            try:
-                events = fetch_events(k)
-            except OutOfCredits as e:
-                log.error("%s", e)
-                failed = True
-                break
-            except Exception as e:
-                log.error("%s fallito: %s", k, e)
-                failed = True
-                continue
+            # Non ignorare errori, limiti di credito o risposte non valide.
+            events = fetch_events(k)
+            if not isinstance(events, list):
+                raise RuntimeError(f"Risposta non valida per {k}: attesa lista eventi")
             for ev in events:
                 try:
                     start = parse_iso(ev["commence_time"])
-                except (KeyError, ValueError):
+                except (KeyError, TypeError, ValueError):
                     continue
                 if now <= start <= limit:
                     entry = to_entry(ev, group, affiliates, counter)
@@ -272,16 +252,8 @@ def main():
             time.sleep(0.3)
         entries.sort(key=lambda e: e["start"])
         results[group] = entries
-        if group == "tennis":
-            log.info("Tennis: %d match utili entro %d giorni", len(entries), DAYS_AHEAD)
 
-    # Non pubblicare feed parziali quando anche una sola richiesta è fallita.
-    # Il workflow GitHub Actions segnalerà l'errore con exit code 1.
-    if failed:
-        log.error("Aggiornamento incompleto: nessun file pubblicato su Supabase.")
-        return 1
-
-    stamp = now.isoformat(timespec="microseconds").replace("+00:00", "Z")
+    stamp = now.replace(tzinfo=None).isoformat()
     if "calcio" in results:
         sb_upload("odds.json", {"matches": results["calcio"], "updated_at": stamp, "affiliates": affiliates})
     for group, fname in (("tennis", "tennis.json"), ("basket", "basketball.json")):
