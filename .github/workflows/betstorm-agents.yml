@@ -1,11 +1,20 @@
 name: BetStorm agents
 
-# Nessuna esecuzione programmata. Solo anteprima manuale delle quote.
+# Solo test manuale: nessuna pianificazione automatica.
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "preview = solo anteprima; send = un invio reale Telegram"
+        required: true
+        type: choice
+        options:
+          - preview
+          - send
+        default: preview
 
 jobs:
-  telegram_preview:
+  telegram_test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -15,10 +24,12 @@ jobs:
           python-version: "3.12"
       - name: Installa dipendenze
         run: python -m pip install requests
-      - name: Anteprima Telegram (nessun invio)
+      - name: Test Telegram (solo azione manuale)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SUPABASE_BUCKET: betstorm-data
-          BETSTORM_TELEGRAM_SEND: "0"
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          BETSTORM_TELEGRAM_SEND: ${{ inputs.mode == 'send' && '1' || '0' }}
         run: python telegram_publisher.py
