@@ -20,6 +20,7 @@ on:
           - email_duplicate_check
           - prepare_unsubscribe_test
           - unsubscribe_token_test
+          - unsubscribe_link_check
         default: preview
 
 concurrency:
@@ -235,4 +236,44 @@ jobs:
           prepare_unsubscribe_link(recipients[0])
           print('OK: token stabile preparato o gia presente; nessuna email inviata.')
           print('Registro invii non modificato. Verificare il conteggio token in Supabase.')
+          PYCODE
+
+  unsubscribe_link_check:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'unsubscribe_link_check'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Installa dipendenze
+        run: python -m pip install requests
+      - name: Verifica GET del link stabile senza disiscrivere
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          NEWSLETTER_RECIPIENTS: ${{ secrets.NEWSLETTER_RECIPIENTS }}
+          NEWSLETTER_UNSUBSCRIBE_SECRET: ${{ secrets.NEWSLETTER_UNSUBSCRIBE_SECRET }}
+        run: |
+          python - <<'PYCODE'
+          import os
+          import requests
+          from email_notifier import prepare_unsubscribe_link
+
+          recipients = [x.strip().lower() for x in os.environ.get('NEWSLETTER_RECIPIENTS', '').split(',') if x.strip()]
+          if len(recipients) != 1:
+              raise SystemExit('Test bloccato: occorre un solo destinatario.')
+          # Il link contiene un token segreto: mai stamparlo.
+          link = prepare_unsubscribe_link(recipients[0])
+          response = requests.get(link, timeout=25, allow_redirects=False)
+          if response.status_code != 200:
+              raise SystemExit(f'Pagina non valida: HTTP {response.status_code}')
+          page = response.text.lower()
+          if 'conferma disiscrizione' not in page:
+              raise SystemExit('Pagina di conferma non riconosciuta.')
+          print('OK: il link stabile apre la pagina di conferma (GET).')
+          print('Nessuna richiesta POST eseguita; nessuna email inviata.')
           PYCODE
