@@ -67,6 +67,10 @@ jobs:
 
   email_send:
     if: github.event_name == 'workflow_dispatch' && inputs.mode == 'email_send'
+    # Serializza i job email anche rispetto ad altri workflow che usano lo stesso gruppo.
+    concurrency:
+      group: betstorm-newsletter-send
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
