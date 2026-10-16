@@ -8,6 +8,7 @@ import html
 import os
 import hashlib
 import json
+import secrets
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -135,6 +136,37 @@ def delivery_key(now, body, recipients):
     return now.strftime("%Y-%m-%d") + ":" + recipient_hash
 
 
+def prepare_unsubscribe_link(email):
+    """Only for the single test subscriber. Rotates the prior unsubscribe link."""
+    base = os.environ["SUPABASE_URL"].rstrip("/")
+    key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+    url = f"{base}/rest/v1/newsletter"
+    headers = {"apikey": key, "Authorization": f"Bearer {key}",
+               "Content-Type": "application/json"}
+    response = requests.get(url, headers=headers, params={
+        "select": "id,confirmed,unsubscribed",
+        "email": f"eq.{email}", "limit": "2"}, timeout=25)
+    response.raise_for_status()
+    rows = response.json()
+    if len(rows) != 1 or rows[0]["confirmed"] is not True or rows[0]["unsubscribed"] is not False:
+        raise RuntimeError("Invio bloccato: destinatario non confermato o disiscritto")
+    token = secrets.token_hex(32)
+    token_hash = hashlib.sha256(token.encode("ascii")).hexdigest()
+    update = requests.patch(url, headers={**headers, "Prefer": "return=representation"},
+        params={"id": f"eq.{rows[0]['id']}", "confirmed": "eq.true", "unsubscribed": "eq.false"},
+        json={"unsubscribe_token_hash": token_hash}, timeout=25)
+    update.raise_for_status()
+    if len(update.json()) != 1:
+        raise RuntimeError("Invio bloccato: iscrizione modificata durante la preparazione")
+    return f"https://www.betstorm.it/api/newsletter-unsubscribe?token={token}"
+
+
+def append_unsubscribe(body, link):
+    return body + ("\n<hr><p><small>Per non ricevere più queste email: "
+                   f'<a href="{safe(link)}">Disiscriviti dalla newsletter</a>.'
+                   "</small></p>")
+
+
 def main():
     now = datetime.now(timezone.utc)
     items, feed_times = collect(now)
@@ -163,6 +195,11 @@ def main():
     if state.get("key") == key:
         print("Newsletter gia' inviata o prenotata oggi: nessun nuovo invio")
         return 0
+
+    # Create a fresh link only when this day's send is not already reserved.
+    # This rotates the previous test link; never print the new token or URL.
+    unsubscribe_link = prepare_unsubscribe_link(recipients[0].lower())
+    body = append_unsubscribe(body, unsubscribe_link)
 
     # Reserve BEFORE contacting Resend. A failed/uncertain send stays blocked
     # until manually investigated: prevents accidental duplicate delivery.
