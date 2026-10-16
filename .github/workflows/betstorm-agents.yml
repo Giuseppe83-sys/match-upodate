@@ -19,6 +19,7 @@ on:
           - email_state_check
           - email_duplicate_check
           - prepare_unsubscribe_test
+          - unsubscribe_token_test
         default: preview
 
 concurrency:
@@ -202,3 +203,36 @@ jobs:
           NEWSLETTER_TEST_EMAIL: ${{ secrets.NEWSLETTER_RECIPIENTS }}
           BETSTORM_PREPARE_UNSUBSCRIBE: "1"
         run: python newsletter_prepare_unsubscribe.py
+
+  unsubscribe_token_test:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'unsubscribe_token_test'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Installa dipendenze
+        run: python -m pip install requests
+      - name: Registra token stabile senza inviare email
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          NEWSLETTER_RECIPIENTS: ${{ secrets.NEWSLETTER_RECIPIENTS }}
+          NEWSLETTER_UNSUBSCRIBE_SECRET: ${{ secrets.NEWSLETTER_UNSUBSCRIBE_SECRET }}
+        run: |
+          python - <<'PYCODE'
+          import os
+          from email_notifier import prepare_unsubscribe_link
+
+          recipients = [x.strip().lower() for x in os.environ.get('NEWSLETTER_RECIPIENTS', '').split(',') if x.strip()]
+          if len(recipients) != 1:
+              raise SystemExit('Test bloccato: occorre esattamente un destinatario.')
+          # Non stampare il link: contiene un token privato.
+          prepare_unsubscribe_link(recipients[0])
+          print('OK: token stabile preparato o gia presente; nessuna email inviata.')
+          print('Registro invii non modificato. Verificare il conteggio token in Supabase.')
+          PYCODE
