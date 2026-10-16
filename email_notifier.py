@@ -8,7 +8,7 @@ import html
 import os
 import hashlib
 import json
-import secrets
+import hmac
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -137,27 +137,46 @@ def delivery_key(now, body, recipients):
 
 
 def prepare_unsubscribe_link(email):
-    """Only for the single test subscriber. Rotates the prior unsubscribe link."""
+    """Stable HMAC token; never overwrite a different existing token hash."""
+    secret = os.environ.get("NEWSLETTER_UNSUBSCRIBE_SECRET", "")
+    if len(secret) < 32:
+        raise RuntimeError("Invio bloccato: NEWSLETTER_UNSUBSCRIBE_SECRET mancante o troppo corto")
     base = os.environ["SUPABASE_URL"].rstrip("/")
     key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
     url = f"{base}/rest/v1/newsletter"
     headers = {"apikey": key, "Authorization": f"Bearer {key}",
                "Content-Type": "application/json"}
     response = requests.get(url, headers=headers, params={
-        "select": "id,confirmed,unsubscribed",
+        "select": "id,confirmed,unsubscribed,unsubscribe_token_hash",
         "email": f"eq.{email}", "limit": "2"}, timeout=25)
     response.raise_for_status()
     rows = response.json()
     if len(rows) != 1 or rows[0]["confirmed"] is not True or rows[0]["unsubscribed"] is not False:
         raise RuntimeError("Invio bloccato: destinatario non confermato o disiscritto")
-    token = secrets.token_hex(32)
+
+    subscriber = rows[0]
+    token = hmac.new(secret.encode("utf-8"),
+                     ("betstorm:unsubscribe:v1:" + str(subscriber["id"])).encode("utf-8"),
+                     hashlib.sha256).hexdigest()
     token_hash = hashlib.sha256(token.encode("ascii")).hexdigest()
-    update = requests.patch(url, headers={**headers, "Prefer": "return=representation"},
-        params={"id": f"eq.{rows[0]['id']}", "confirmed": "eq.true", "unsubscribed": "eq.false"},
-        json={"unsubscribe_token_hash": token_hash}, timeout=25)
-    update.raise_for_status()
-    if len(update.json()) != 1:
-        raise RuntimeError("Invio bloccato: iscrizione modificata durante la preparazione")
+    existing = subscriber.get("unsubscribe_token_hash")
+
+    if existing is not None and not hmac.compare_digest(existing, token_hash):
+        raise RuntimeError(
+            "Invio bloccato: esiste un link precedente. "
+            "Serve una migrazione controllata; nessun token modificato."
+        )
+
+    if existing is None:
+        update = requests.patch(
+            url, headers={**headers, "Prefer": "return=representation"},
+            params={"id": f"eq.{subscriber['id']}", "confirmed": "eq.true",
+                    "unsubscribed": "eq.false", "unsubscribe_token_hash": "is.null"},
+            json={"unsubscribe_token_hash": token_hash}, timeout=25)
+        update.raise_for_status()
+        if len(update.json()) != 1:
+            raise RuntimeError("Invio bloccato: iscrizione modificata durante la preparazione")
+
     return f"https://www.betstorm.it/api/newsletter-unsubscribe?token={token}"
 
 
@@ -196,8 +215,7 @@ def main():
         print("Newsletter gia' inviata o prenotata oggi: nessun nuovo invio")
         return 0
 
-    # Create a fresh link only when this day's send is not already reserved.
-    # This rotates the previous test link; never print the new token or URL.
+    # Stable link; fail closed rather than invalidate a previously issued link.
     unsubscribe_link = prepare_unsubscribe_link(recipients[0].lower())
     body = append_unsubscribe(body, unsubscribe_link)
 
