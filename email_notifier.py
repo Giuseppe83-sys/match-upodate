@@ -137,45 +137,67 @@ def delivery_key(now, body, recipients):
 
 
 def prepare_unsubscribe_link(email):
-    """Stable HMAC token; never overwrite a different existing token hash."""
+    """Create/reuse a stable token in the multi-token registry; preserve legacy links."""
     secret = os.environ.get("NEWSLETTER_UNSUBSCRIBE_SECRET", "")
     if len(secret) < 32:
         raise RuntimeError("Invio bloccato: NEWSLETTER_UNSUBSCRIBE_SECRET mancante o troppo corto")
+
     base = os.environ["SUPABASE_URL"].rstrip("/")
     key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
-    url = f"{base}/rest/v1/newsletter"
     headers = {"apikey": key, "Authorization": f"Bearer {key}",
                "Content-Type": "application/json"}
-    response = requests.get(url, headers=headers, params={
-        "select": "id,confirmed,unsubscribed,unsubscribe_token_hash",
+    newsletter_url = f"{base}/rest/v1/newsletter"
+    tokens_url = f"{base}/rest/v1/newsletter_unsubscribe_tokens"
+
+    response = requests.get(newsletter_url, headers=headers, params={
+        "select": "id,confirmed,unsubscribed",
         "email": f"eq.{email}", "limit": "2"}, timeout=25)
     response.raise_for_status()
     rows = response.json()
     if len(rows) != 1 or rows[0]["confirmed"] is not True or rows[0]["unsubscribed"] is not False:
         raise RuntimeError("Invio bloccato: destinatario non confermato o disiscritto")
 
-    subscriber = rows[0]
+    subscriber_id = str(rows[0]["id"])
     token = hmac.new(secret.encode("utf-8"),
-                     ("betstorm:unsubscribe:v1:" + str(subscriber["id"])).encode("utf-8"),
+                     ("betstorm:unsubscribe:v1:" + subscriber_id).encode("utf-8"),
                      hashlib.sha256).hexdigest()
     token_hash = hashlib.sha256(token.encode("ascii")).hexdigest()
-    existing = subscriber.get("unsubscribe_token_hash")
 
-    if existing is not None and not hmac.compare_digest(existing, token_hash):
-        raise RuntimeError(
-            "Invio bloccato: esiste un link precedente. "
-            "Serve una migrazione controllata; nessun token modificato."
-        )
+    # An existing token must belong to exactly this subscriber.
+    lookup = requests.get(tokens_url, headers=headers, params={
+        "select": "newsletter_id", "token_hash": f"eq.{token_hash}", "limit": "2"
+    }, timeout=25)
+    lookup.raise_for_status()
+    matches = lookup.json()
+    if len(matches) > 1 or (matches and str(matches[0]["newsletter_id"]) != subscriber_id):
+        raise RuntimeError("Invio bloccato: associazione token non valida")
 
-    if existing is None:
-        update = requests.patch(
-            url, headers={**headers, "Prefer": "return=representation"},
-            params={"id": f"eq.{subscriber['id']}", "confirmed": "eq.true",
-                    "unsubscribed": "eq.false", "unsubscribe_token_hash": "is.null"},
-            json={"unsubscribe_token_hash": token_hash}, timeout=25)
-        update.raise_for_status()
-        if len(update.json()) != 1:
-            raise RuntimeError("Invio bloccato: iscrizione modificata durante la preparazione")
+    if not matches:
+        # Unique token_hash prevents duplicate rows during concurrent runs.
+        # Do not touch newsletter.unsubscribe_token_hash: old links stay valid.
+        insert = requests.post(tokens_url, headers={**headers, "Prefer": "return=minimal"},
+                               json={"newsletter_id": subscriber_id, "token_hash": token_hash},
+                               timeout=25)
+        if insert.status_code == 409:
+            # A concurrent insert is acceptable only if it belongs to this subscriber.
+            check = requests.get(tokens_url, headers=headers, params={
+                "select": "newsletter_id", "token_hash": f"eq.{token_hash}", "limit": "2"
+            }, timeout=25)
+            check.raise_for_status()
+            found = check.json()
+            if len(found) != 1 or str(found[0]["newsletter_id"]) != subscriber_id:
+                raise RuntimeError("Invio bloccato: conflitto token")
+        else:
+            insert.raise_for_status()
+
+    # Recheck consent before allowing a message to be sent.
+    active = requests.get(newsletter_url, headers=headers, params={
+        "select": "id", "id": f"eq.{subscriber_id}",
+        "confirmed": "eq.true", "unsubscribed": "eq.false", "limit": "1"
+    }, timeout=25)
+    active.raise_for_status()
+    if len(active.json()) != 1:
+        raise RuntimeError("Invio bloccato: iscrizione non più attiva")
 
     return f"https://www.betstorm.it/api/newsletter-unsubscribe?token={token}"
 
