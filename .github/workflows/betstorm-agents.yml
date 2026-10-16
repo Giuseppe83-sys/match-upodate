@@ -18,6 +18,7 @@ on:
           - email_send
           - email_state_check
           - email_duplicate_check
+          - prepare_unsubscribe_test
         default: preview
 
 concurrency:
@@ -177,3 +178,26 @@ jobs:
           print('OK: un nuovo invio con la stessa chiave verrebbe bloccato dal codice attuale.')
           print('NESSUNA EMAIL INVIATA; REGISTRO NON MODIFICATO.')
           PYCODE
+
+  prepare_unsubscribe_test:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'prepare_unsubscribe_test'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Installa dipendenze
+        run: python -m pip install requests
+      - name: Prepara link disiscrizione solo per destinatario di prova
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RESEND_FROM_EMAIL: ${{ secrets.RESEND_FROM_EMAIL }}
+          NEWSLETTER_TEST_EMAIL: ${{ secrets.NEWSLETTER_RECIPIENTS }}
+          BETSTORM_PREPARE_UNSUBSCRIBE: "1"
+        run: python newsletter_prepare_unsubscribe.py
