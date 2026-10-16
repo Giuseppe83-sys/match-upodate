@@ -8,13 +8,14 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "preview = anteprima Telegram; send = invio Telegram; email_preview = anteprima newsletter senza invio"
+        description: "preview = anteprima Telegram; send = invio Telegram; email_preview = anteprima newsletter; email_send = invio test a un solo destinatario"
         required: true
         type: choice
         options:
           - preview
           - send
           - email_preview
+          - email_send
         default: preview
 
 concurrency:
@@ -23,7 +24,7 @@ concurrency:
 
 jobs:
   telegram:
-    if: github.event_name == 'schedule' || inputs.mode != 'email_preview'
+    if: github.event_name == 'schedule' || (inputs.mode == 'preview' || inputs.mode == 'send')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -60,4 +61,37 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SUPABASE_BUCKET: betstorm-data
           BETSTORM_EMAIL_SEND: "0"
+        run: python email_notifier.py
+
+  email_send:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'email_send'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Installa dipendenze
+        run: python -m pip install requests
+      - name: Verifica un solo destinatario
+        env:
+          NEWSLETTER_RECIPIENTS: ${{ secrets.NEWSLETTER_RECIPIENTS }}
+        run: |
+          python - <<'PYCODE'
+          import os
+          addresses = [a.strip() for a in os.environ.get('NEWSLETTER_RECIPIENTS', '').split(',') if a.strip()]
+          if len(addresses) != 1:
+              raise SystemExit('Invio bloccato: occorre esattamente un destinatario.')
+          print('Destinatario unico confermato, indirizzo non mostrato.')
+          PYCODE
+      - name: Invia email di prova
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_BUCKET: betstorm-data
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RESEND_FROM_EMAIL: ${{ secrets.RESEND_FROM_EMAIL }}
+          NEWSLETTER_RECIPIENTS: ${{ secrets.NEWSLETTER_RECIPIENTS }}
+          BETSTORM_EMAIL_SEND: "1"
         run: python email_notifier.py
