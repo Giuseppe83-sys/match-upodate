@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "preview = anteprima Telegram; send = invio Telegram; email_preview = anteprima newsletter; email_send = invio test a un solo destinatario; email_state_check = verifica registro senza invio"
+        description: "preview = anteprima Telegram; send = invio Telegram; email_preview = anteprima newsletter; email_send = invio test a un solo destinatario; email_state_check = verifica registro; email_duplicate_check = verifica blocco duplicati"
         required: true
         type: choice
         options:
@@ -17,6 +17,7 @@ on:
           - email_preview
           - email_send
           - email_state_check
+          - email_duplicate_check
         default: preview
 
 concurrency:
@@ -130,4 +131,45 @@ jobs:
               raise SystemExit('Registro non valido: atteso oggetto JSON')
           print('Registro newsletter letto correttamente; nessun invio e nessuna modifica.')
           print('Stato:', data.get('status', 'vuoto'))
+          PYCODE
+
+  email_duplicate_check:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'email_duplicate_check'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Installa dipendenze
+        run: python -m pip install requests
+      - name: Verifica blocco duplicati (nessun invio)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_BUCKET: betstorm-data
+          NEWSLETTER_RECIPIENTS: ${{ secrets.NEWSLETTER_RECIPIENTS }}
+        run: |
+          python - <<'PYCODE'
+          import os
+          from datetime import datetime, timezone
+          from email_notifier import delivery_key, read_state
+
+          recipients = [x.strip() for x in os.environ.get('NEWSLETTER_RECIPIENTS', '').split(',') if x.strip()]
+          if len(recipients) != 1:
+              raise SystemExit('Test bloccato: atteso un solo destinatario.')
+
+          now = datetime.now(timezone.utc)
+          expected = delivery_key(now, '', recipients)
+          state = read_state()
+          status = state.get('status')
+          same_day = state.get('key') == expected
+          print('Data UTC:', now.strftime('%Y-%m-%d'))
+          print('Stato registrato:', status or 'assente')
+          print('Chiave del giorno corrispondente:', 'SI' if same_day else 'NO')
+          if not same_day or status not in ('reserved', 'sent'):
+              raise SystemExit('Blocco non verificato: chiave assente/diversa o stato inatteso. Nessun invio eseguito.')
+          print('OK: un nuovo invio con la stessa chiave verrebbe bloccato dal codice attuale.')
+          print('NESSUNA EMAIL INVIATA; REGISTRO NON MODIFICATO.')
           PYCODE
