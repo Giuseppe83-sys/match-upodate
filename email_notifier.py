@@ -6,6 +6,8 @@ Per inviare: BETSTORM_EMAIL_SEND=1, con credenziali Resend e destinatari configu
 """
 import html
 import os
+import hashlib
+import json
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -14,6 +16,7 @@ from betstorm_common import download
 FEEDS = (("Calcio", "odds.json"), ("Tennis", "tennis.json"), ("Basket", "basketball.json"))
 MAX_EVENTS = max(1, min(int(os.getenv("NEWSLETTER_MAX_EVENTS", "9")), 20))
 MAX_AGE_HOURS = 24
+STATE_FILE = "newsletter_send_state.json"
 
 
 def parse_time(value):
@@ -97,6 +100,41 @@ def build_html(items, feed_times):
     return "\n".join(parts)
 
 
+
+def state_url():
+    base = os.environ["SUPABASE_URL"].rstrip("/")
+    bucket = os.getenv("SUPABASE_BUCKET", "betstorm-data")
+    return f"{base}/storage/v1/object/{bucket}/{STATE_FILE}"
+
+
+def storage_headers():
+    key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+    return {"Authorization": f"Bearer {key}", "apikey": key}
+
+
+def read_state():
+    response = requests.get(state_url(), headers=storage_headers(), timeout=25)
+    if response.status_code == 404:
+        return {}
+    response.raise_for_status()  # Fail closed: never send when storage is unavailable.
+    data = response.json()
+    if not isinstance(data, dict):
+        raise RuntimeError("Stato newsletter non valido: invio bloccato")
+    return data
+
+
+def write_state(state):
+    headers = {**storage_headers(), "Content-Type": "application/json", "x-upsert": "true"}
+    response = requests.post(state_url(), headers=headers, data=json.dumps(state).encode("utf-8"), timeout=25)
+    response.raise_for_status()
+
+
+def delivery_key(now, body, recipients):
+    # One newsletter per UTC calendar day per recipient set, even if odds change.
+    recipient_hash = hashlib.sha256("\n".join(sorted(x.lower() for x in recipients)).encode()).hexdigest()
+    return now.strftime("%Y-%m-%d") + ":" + recipient_hash
+
+
 def main():
     now = datetime.now(timezone.utc)
     items, feed_times = collect(now)
@@ -117,8 +155,19 @@ def main():
     api_key = os.environ["RESEND_API_KEY"]
     sender = os.environ["RESEND_FROM_EMAIL"]
     recipients = [x.strip() for x in os.environ.get("NEWSLETTER_RECIPIENTS", "").split(",") if x.strip()]
-    if not recipients:
-        raise RuntimeError("Invio bloccato: NEWSLETTER_RECIPIENTS vuoto")
+    if len(recipients) != 1:
+        raise RuntimeError("Invio bloccato: per ora e' consentito un solo destinatario")
+
+    key = delivery_key(now, body, recipients)
+    state = read_state()
+    if state.get("key") == key:
+        print("Newsletter gia' inviata o prenotata oggi: nessun nuovo invio")
+        return 0
+
+    # Reserve BEFORE contacting Resend. A failed/uncertain send stays blocked
+    # until manually investigated: prevents accidental duplicate delivery.
+    reservation = {"key": key, "status": "reserved", "reserved_at": now.isoformat()}
+    write_state(reservation)
     response = requests.post(
         "https://api.resend.com/emails",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -126,7 +175,10 @@ def main():
         timeout=60,
     )
     response.raise_for_status()
-    print(f"Email inviata tramite Resend a {len(recipients)} destinatari")
+    reservation["status"] = "sent"
+    reservation["sent_at"] = datetime.now(timezone.utc).isoformat()
+    write_state(reservation)
+    print("Email inviata tramite Resend a un destinatario; stato registrato su Supabase")
     return 0
 
 
